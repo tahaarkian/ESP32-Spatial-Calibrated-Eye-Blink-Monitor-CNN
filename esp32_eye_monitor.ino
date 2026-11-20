@@ -2,10 +2,9 @@
 #include <Preferences.h>
 #include "esp_camera.h"
 
-// TensorFlow Lite Micro (Install "Chirale_TensorFlowLite" in Arduino Library Manager)
-#include <TensorFlowLite_ESP32.h>
+// TensorFlow Lite Micro ("Chirale_TensorFlowLite" in Arduino Library Manager)
+#include <Chirale_TensorFlowLite.h>
 #include "tensorflow/lite/micro/all_ops_resolver.h"
-#include "tensorflow/lite/micro/micro_error_reporter.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
@@ -212,12 +211,11 @@ void setup() {
 
     // 2. Initialize TensorFlow Lite Micro
     tensor_arena = (uint8_t*)ps_malloc(kTensorArenaSize);
-    static tflite::MicroErrorReporter micro_error_reporter;
     static tflite::AllOpsResolver resolver;
     const tflite::Model* model = tflite::GetModel(g_eye_model_data);
 
     static tflite::MicroInterpreter static_interpreter(
-        model, resolver, tensor_arena, kTensorArenaSize, &micro_error_reporter);
+        model, resolver, tensor_arena, kTensorArenaSize);
     interpreter = &static_interpreter;
     interpreter->AllocateTensors();
     model_input  = interpreter->input(0);
