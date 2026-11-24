@@ -16,6 +16,7 @@ esp32_eye_monitor/
 ├── eye_model.h             # INT8 quantized 24×24 grayscale CNN (outputs pre-sigmoid raw logit)
 ├── calib_solver.h          # On-device C++ convex spatial calibration solver & predictor
 ├── blink_engine.h          # Temporal smoothing, confidence gate, and debounced blink counter
+└── fuzzy_eye_diag.h
 └── README.md               # Project documentation and setup guide
 ```
 
