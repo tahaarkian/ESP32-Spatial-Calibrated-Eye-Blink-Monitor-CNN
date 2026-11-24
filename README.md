@@ -91,3 +91,42 @@ The ESP32 solves a strictly convex 4-parameter optimization problem in **< 2 ms*
 
 * Base CNN trained on the **Closed Eyes in the Wild (CEW)** dataset (for academic and research use only).
 
+
+
+
+## 🧠 Fuzzy Logic Ocular Strain Diagnostic (`fuzzy_eye_diag.h`)
+
+In addition to real-time blink detection, this firmware includes a zero-heap **Mamdani Fuzzy Inference System (FIS)** (`fuzzy_eye_diag.h`) that continuously evaluates ocular strain and dry-eye risk on-device (`0%–100%`).
+
+### Clinical Basis & Inputs
+The fuzzy engine combines three real-time metrics derived directly from the ESP32-CAM's 160×120 grayscale stream without external sensors:
+1. **Blink Rate (`BPM`):** Computed over a rolling 60-second circular buffer from `res.total_blinks` (clinical tear-film stability threshold: `≥ 20 bpm` optimal, `< 10 bpm` high risk).
+2. **Viewing Distance (`cm`):** Estimated distance between the user and camera (`≥ 60 cm` ergonomic, `≤ 32 cm` high accommodation strain).
+3. **Ambient Illumination (`0–255 luma`):** Sampled from the outer 12-pixel perimeter of the camera frame to measure room lighting without bias from face brightness (`≤ 35` dark room glare contrast, `≥ 135` well-lit).
+
+### Inference Architecture
+* **Fuzzification:** Maps raw sensor values onto overlapping trapezoidal (`trapmf`) and triangular (`trimf`) membership functions (`Low`, `Moderate`, `Optimal`).
+* **Rule Evaluation:** Evaluates 7 clinical `IF–THEN` rules using Mamdani Min-Max inference (`std::min` / `std::max`), tracking separate sub-risk scores for **evaporative dry eye** and **photic/contrast strain**.
+* **Defuzzification:** Computes a weighted centroid score across four severity singletons (`Low = 10`, `Moderate = 40`, `High = 72`, `Severe = 95`):
+
+\[\text{Strain Score} = \frac{(w_{\text{low}} \cdot 10) + (w_{\text{mod}} \cdot 40) + (w_{\text{high}} \cdot 72) + (w_{\text{severe}} \cdot 95)}{w_{\text{low}} + w_{\text{mod}} + w_{\text{high}} + w_{\text{severe}}}\]
+
+### Output States & Serial Telemetry
+Every 2 seconds, the diagnostic engine outputs a status summary over Serial (`115200 baud`):
+
+| Strain Score | Status Label | Clinical Interpretation |
+| :--- | :--- | :--- |
+| **`< 25%`** | `OPTIMAL_OCULAR_STATE` | Healthy blink rate, safe distance, and adequate lighting |
+| **`25% – 44%`** | `MILD_STRAIN_MONITOR` | Minor deviation in one ergonomic or blink metric |
+| **`45% – 74%`** | `MODERATE_VISUAL_FATIGUE` | Sustained low blink rate or dim lighting fatigue |
+| **`≥ 75%`** | `HIGH_DRY_EYE_STRAIN` / `HIGH_DARK_NEAR_STRAIN` | Combined risk factors active; triggers break/lighting alert |
+
+**Example Serial Output:**
+```text
+p_closed=0.04 | state=OPEN   | blinks=14 (14.0/m) | fallback=SLEEP 
+[DIAG] BPM: 14.0 | Dist: 50 cm | Light: 118/255 => Strain: 31.4% [MILD_STRAIN_MONITOR]
+```
+
+### References
+* Tu, Z., & Pang, Y. (2023). *The Effect of Blink Rate and Visual Setting on the Symptoms of Digital Eye Strain*. Investigative Ophthalmology & Visual Science (IOVS).
+* *Identification of a Blink Frequency Threshold for Maintaining Tear Film Stability* (2025). Scientific Reports.
