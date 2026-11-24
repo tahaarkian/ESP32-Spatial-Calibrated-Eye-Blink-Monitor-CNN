@@ -1,6 +1,12 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include "esp_camera.h"
+#include "fuzzy_eye_diag.h"
+
+FuzzyEyeDiagnostic fuzzy_diag;
+unsigned long last_diag_ms = 0;
+
+
 
 // TensorFlow Lite Micro ("Chirale_TensorFlowLite" in Arduino Library Manager)
 #include <Chirale_TensorFlowLite.h>
@@ -238,11 +244,14 @@ void loop() {
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) return;
 
-    // Fast path: run 24x24 INT8 CNN on current eye_box
+    // 1. Estimate ambient room brightness while frame buffer is active
+    float ambient_luma = FuzzyEyeDiagnostic::estimate_ambient_luma(fb->buf, fb->width, fb->height);
+
+    // 2. Fast path: run 24x24 INT8 CNN on current eye_box
     float raw_logit = run_eye_cnn(fb->buf, fb->width, fb->height, engine.eye_box);
     BlinkStepResult res = engine.step(raw_logit);
 
-    // Temporary Fallback: re-center eye_box only when confidence gate triggers
+    // 3. Temporary Fallback: re-center eye_box only when confidence gate triggers
     if (res.wake_fallback) {
         EyeBox search_win = {
             max(0, engine.eye_box.x - 16),
@@ -256,13 +265,72 @@ void loop() {
 
     esp_camera_fb_return(fb);
 
+    // 4. Track rolling 60-second Blink Rate (BPM) from res.total_blinks
+    static uint32_t blink_timestamps[64];
+    static uint8_t  blink_head = 0;
+    static uint8_t  blink_count = 0;
+    static int      prev_total_blinks = 0;
+    static uint32_t session_start_ms = millis();
+
+    uint32_t now = millis();
+
+    // Reset rolling window if calibration reset total_blinks to 0
+    if (res.total_blinks < prev_total_blinks) {
+        blink_head = 0;
+        blink_count = 0;
+        prev_total_blinks = 0;
+        session_start_ms = now;
+    }
+
+    // Record timestamp whenever a new blink completes
+    while (prev_total_blinks < res.total_blinks) {
+        blink_timestamps[blink_head] = now;
+        blink_head = (blink_head + 1) % 64;
+        if (blink_count < 64) blink_count++;
+        prev_total_blinks++;
+    }
+
+    // Count how many recorded blinks occurred within the last 60,000 ms
+    int recent_blinks = 0;
+    for (uint8_t i = 0; i < blink_count; ++i) {
+        if (now - blink_timestamps[i] <= 60000UL) {
+            recent_blinks++;
+        }
+    }
+
+    // Scale to BPM during the first 60s (after 10s warm-up) so startup doesn't falsely trigger low-BPM alerts
+    uint32_t elapsed_ms = now - session_start_ms;
+    float current_bpm = 15.0f; // Neutral default during first 10s warm-up
+    if (elapsed_ms >= 60000UL) {
+        current_bpm = static_cast<float>(recent_blinks);
+    } else if (elapsed_ms >= 10000UL) {
+        current_bpm = recent_blinks * (60000.0f / static_cast<float>(elapsed_ms));
+    }
+
+    // 5. Fast telemetry printout (every 250ms)
     static uint32_t last_print = 0;
-    if (millis() - last_print > 250) {
-        last_print = millis();
-        Serial.printf("p_closed=%.2f | state=%s | blinks=%d | fallback=%s\n",
+    if (now - last_print > 250) {
+        last_print = now;
+        Serial.printf("p_closed=%.2f | state=%s | blinks=%d (%.1f/m) | fallback=%s\n",
                       res.p_closed,
                       res.is_closed ? "CLOSED" : "OPEN  ",
                       res.total_blinks,
+                      current_bpm,
                       res.wake_fallback ? "ACTIVE" : "SLEEP ");
+    }
+
+    // 6. Fuzzy Ocular Diagnostic printout (every 2 seconds)
+    static uint32_t last_diag_ms = 0;
+    if (now - last_diag_ms >= 2000) {
+        last_diag_ms = now;
+
+        EyeDiagnosisResult diag = fuzzy_diag.evaluate(current_bpm, engine.est_dist_cm, ambient_luma);
+
+        Serial.printf("[DIAG] BPM: %.1f | Dist: %.0f cm | Light: %.0f/255 => Strain: %.1f%% [%s]\n",
+                      current_bpm, engine.est_dist_cm, ambient_luma, diag.strain_score, diag.status_label);
+
+        if (diag.strain_score >= 75.0f) {
+            Serial.println("  -> ALERT: Take a 20-second break, blink fully, or improve room lighting.");
+        }
     }
 }
